@@ -1,0 +1,25 @@
+{
+  "name": "cse-archive-server",
+  "description": "A server for archiving CSE data",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "start": "bun src/index.ts",
+    "dev": "bun --watch src/index.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^7"
+  },
+  "dependencies": {
+    "firebase-admin": "13.9.0",
+    "googleapis": "154.1.0",
+    "hono": "4.13.16"
+  }
+}
