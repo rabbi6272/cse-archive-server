@@ -1,5 +1,6 @@
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
+import { logger } from "hono/logger";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { fetchDriveData } from "./drive/data";
 import { getRootFolderId } from "./drive/config";
@@ -35,6 +36,9 @@ const ALLOWED_ORIGIN = ["http://localhost:3000", "https://ruetcsearchive.vercel.
 const FOLDER_ID_PATTERN = /^[A-Za-z0-9_-]{10,80}$/;
 
 const app = new Hono();
+
+// Only the "-->" response line, which carries status and timing.
+app.use(logger((line) => !line.startsWith("<--") && console.log(line)));
 
 if (!ALLOWED_ORIGIN) {
   console.warn("[Server] ALLOWED_ORIGIN not set - browser requests will be blocked by CORS");
@@ -261,7 +265,7 @@ function bearerToken(c: Context): string | null {
     : null;
 }
 
-// GET is what cron-job.org (and formerly Vercel Cron) sends; POST kept for manual calls.
+// GET is what cron-job.org sends; POST kept for manual calls.
 app.on(["GET", "POST"], "/api/drive/renew-watch", async (c) => {
   const token = bearerToken(c);
   const authorized = Boolean(
