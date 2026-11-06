@@ -9,7 +9,9 @@
     "start": "bun src/index.ts",
     "dev": "bun --watch src/index.ts",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "migrate:data": "bun scripts/migrate-firestore-to-mongo.ts",
+    "verify:data": "bun scripts/verify-migration.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"
@@ -20,6 +22,8 @@
   "dependencies": {
     "firebase-admin": "13.9.0",
     "googleapis": "154.1.0",
-    "hono": "4.13.16"
+    "hono": "4.13.16",
+    "mongodb": "^7.8.0",
+    "zod": "^4.6.7"
   }
 }

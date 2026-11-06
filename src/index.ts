@@ -2,6 +2,8 @@ import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
+import { auth } from "./auth/routes";
+import { v1 } from "./v1";
 import { fetchDriveData } from "./drive/data";
 import { getRootFolderId } from "./drive/config";
 import {
@@ -52,8 +54,32 @@ app.use(
   }),
 );
 app.use("/api/drive", cors({ origin: ALLOWED_ORIGIN ?? "", allowHeaders: ["Content-Type"] }));
+app.use(
+  "/api/v1/drive/*",
+  cors({
+    origin: ALLOWED_ORIGIN ?? "",
+    allowHeaders: ["Content-Type", "Authorization"],
+    allowMethods: ["GET", "POST", "OPTIONS"],
+  }),
+);
+app.use("/api/v1/drive", cors({ origin: ALLOWED_ORIGIN ?? "", allowHeaders: ["Content-Type"] }));
 
 app.get("/health", (c) => c.text("ok"));
+
+// Main-site sign-in, called server-to-server by the Next.js site (src/auth/routes.ts).
+app.route("/api/auth", auth);
+
+// V1 User & Auth API (mounted under /api/v1 and /v1)
+app.route("/api/v1", v1);
+app.route("/v1", v1);
+
+// Route /api/v1/drive requests to /api/drive
+app.all("/api/v1/drive/*", (c) =>
+  app.fetch(new Request(c.req.url.replace("/api/v1/drive", "/api/drive"), c.req.raw)),
+);
+app.all("/api/v1/drive", (c) =>
+  app.fetch(new Request(c.req.url.replace("/api/v1/drive", "/api/drive"), c.req.raw)),
+);
 
 // =================== /api/drive ===================
 

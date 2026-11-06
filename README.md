@@ -56,29 +56,28 @@ Admin actions:
 | `CRON_SECRET` | cron-job.org renew job |
 | `ALLOWED_ORIGIN` | The site's origin, e.g. `https://ruet-cse-archive.vercel.app` |
 | `PORT` | Set by Render (default 3000) |
+| `AUTH_SERVICE_SECRET` | Shared with the Next.js site (same value in Vercel). Guards every `/api/auth/*` call |
+| `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` | Optional. The Web OAuth client of the `ruet-cse-24` Firebase project; enables "Continue with Google" |
+| `USERS_FIREBASE_API_KEY` | Optional. `ruet-cse-24` web API key; defaults to the public key the client already ships |
+
+The Firebase Admin credentials (`FIREBASE_ADMIN_*`) must be for **`ruet-cse-24`**: sign-in uses that project's Auth accounts and `profiles` collection.
+
+## Main-site sign-in (`/api/auth`)
+
+Server-to-server only (no CORS). The Next.js site calls these with `Authorization: Bearer <AUTH_SERVICE_SECRET>` and sets the returned session as an HttpOnly `__session` cookie on its own domain (a cookie from this domain would be a blocked third-party cookie). Same accounts and rules as the profile site (`ruet-cse-24/AUTH_FLOW.md`): passwords are checked by Firebase's Identity Toolkit, unclaimed seeded accounts (`mustRotate`) are refused, and an account needs a `profiles/{uid}` document.
+
+| Endpoint | Does |
+|---|---|
+| `POST /api/auth/login` `{email, password}` | Password sign-in → `{ok, viewer, session: {value, maxAge}}` or `{ok:false, code}` (`invalid`, `claim`, `no-profile`, `throttled`, `error`) |
+| `POST /api/auth/session` `{session}` | Verifies a session cookie (revocation-checked) → `{ok, viewer}` |
+| `GET /api/auth/config` | `{google: boolean}` |
+| `POST /api/auth/google/start` `{redirectUri}` | Google authorize URL + `state` + PKCE `verifier` |
+| `POST /api/auth/google/exchange` `{code, verifier, redirectUri}` | Signs an existing account in → same shape as login (`no-account` if none) |
+
+For Google, add `<site>/api/auth/google/callback` (the Next.js site, e.g. `https://ruetcsearchive.vercel.app/api/auth/google/callback` and `http://localhost:3000/...`) to the OAuth client's Authorized redirect URIs.
 
 Generate secrets with `openssl rand -hex 32`.
 
-## Deploy (Render)
-
-1. New **Web Service** from this repo, **Docker** runtime, health check path `/health`.
-2. Set the env vars above.
-3. cron-job.org jobs (turn on failure emails):
-
-   | Job | URL | Schedule | Request |
-   |---|---|---|---|
-   | Keep awake | `https://<app>.onrender.com/health` | every 10 min | GET |
-   | Renew watch | `https://<app>.onrender.com/api/drive/renew-watch` | daily 03:00 UTC | GET, header `Authorization: Bearer <CRON_SECRET>` |
-
-4. Create the watch once:
-   ```bash
-   curl -X POST https://<app>.onrender.com/api/drive/admin \
-     -H "Authorization: Bearer <ADMIN_SECRET>" -H "Content-Type: application/json" \
-     -d '{"action": "setup"}'
-   ```
-   **Moving from the old Vercel webhook:** run `{"action":"delete","clearMeta":true}` first, then `setup`, so the new channel points at Render. The old channel just expires.
-
-5. Set `NEXT_PUBLIC_DRIVE_API_URL=https://<app>.onrender.com` on the Vercel site and redeploy it.
 
 ## Local development
 
