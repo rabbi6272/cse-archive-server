@@ -4,7 +4,7 @@ import getAdmin from "../src/firebase-admin";
 
 const DRY = process.argv.includes("--dry-run");
 const uri = process.env.MONGODB_URI;
-const dbName = process.env.MONGODB_DB || "ruetcse";
+const dbName = "CseArchive";
 
 if (!uri) {
   console.error("MONGODB_URI must be set in environment.");
@@ -41,7 +41,7 @@ async function copyCollection(
   let total = 0;
   const errors: unknown[] = [];
 
-  for (;;) {
+  for (; ;) {
     let q = fs.collection(name).orderBy("__name__").limit(500);
     if (last) q = q.startAfter(last);
     const snap = await q.get();
