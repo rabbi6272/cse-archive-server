@@ -1,7 +1,7 @@
 import type { Context } from "hono";
 import type { AuthContext } from "../../middleware/requireSession";
 import { checkRateLimit } from "../../middleware/rateLimit";
-import { createSession } from "../auth/auth.session";
+import { createSession } from "../auth/auth.services";
 import {
   processClaimStart,
   processClaimOpen,

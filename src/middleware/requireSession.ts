@@ -1,5 +1,6 @@
 import type { MiddlewareHandler } from "hono";
-import { readSession, type Session } from "../modules/auth/auth.session";
+import { readSession } from "../modules/auth/auth.services";
+import type { Session } from "../modules/auth/auth.types";
 
 export type AuthContext = {
   Variables: {

@@ -2,12 +2,13 @@ import type { Context } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { adminAuth, maskEmail, verifyPassword, sendOobCode, postIdentityToolkit } from "../../config/firebase";
 import { env } from "../../config/env";
-import { createSession, clearSession } from "./auth.session";
 import { checkRateLimit } from "../../middleware/rateLimit";
 import { findLegacyByEmail } from "../profile/profile.services";
 import { getSeries } from "../profile/profile.types";
 import { safeNext, safeCompare, base64url } from "../../shared/utils";
 import {
+  createSession,
+  clearSession,
   isGoogleConfigured,
   loadViewer,
   finishSignIn,
@@ -194,7 +195,32 @@ export async function forgotPasswordController(c: Context) {
 
 export async function sessionCheckController(c: Context) {
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
-  const sessionValue = String(body.session ?? "");
+  const idToken = typeof body.idToken === "string" ? body.idToken : undefined;
+  const sessionValue = typeof body.session === "string" ? body.session : undefined;
+
+  // Client-side Firebase Auth ID token exchange
+  if (idToken) {
+    try {
+      const decoded = await adminAuth.verifyIdToken(idToken);
+      const sessionCookieValue = await createSession(c, idToken);
+      const viewer = await loadViewer(decoded.uid);
+      c.header("Cache-Control", "private, no-store");
+      return c.json({
+        ok: true,
+        viewer: viewer ?? undefined,
+        email: decoded.email,
+        emailVerified: decoded.email_verified === true,
+        session: {
+          value: sessionCookieValue,
+          maxAge: 5 * 24 * 60 * 60,
+        },
+      });
+    } catch (err) {
+      console.error("[auth] session creation from idToken failed:", err);
+      return c.json({ ok: false, code: "invalid-token", message: "Invalid ID token." }, 401);
+    }
+  }
+
   const viewer = sessionValue ? await verifySession(sessionValue) : null;
   return c.json(viewer ? { ok: true, viewer } : { ok: false });
 }

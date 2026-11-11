@@ -9,7 +9,7 @@ import {
   setPrivateContact,
 } from "../profile/profile.services";
 import { seriesFromRoll } from "../profile/profile.types";
-import type { Session } from "../auth/auth.session";
+import type { Session } from "../auth/auth.types";
 
 export async function getViewerStatus(session: Session | null) {
   if (!session) return { user: null };

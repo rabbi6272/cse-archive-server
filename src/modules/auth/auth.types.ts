@@ -9,6 +9,14 @@ export interface Viewer {
   profilePictureUrl: string;
 }
 
+export type Session = {
+  uid: string;
+  email: string;
+  emailVerified: boolean;
+  mustRotate: boolean;
+  needsSection: boolean;
+};
+
 export type AuthFailure = {
   ok: false;
   code: "invalid" | "claim" | "no-profile" | "no-account" | "throttled" | "error" | "unavailable" | "exists" | "series-closed";

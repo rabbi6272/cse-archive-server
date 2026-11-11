@@ -4,7 +4,7 @@ import getAdmin from "../src/firebase-admin";
 
 const DRY = process.argv.includes("--dry-run");
 const uri = process.env.MONGODB_URI;
-const dbName = "CseArchive";
+const dbName = process.env.MONGODB_DB || "CseArchive";
 
 if (!uri) {
   console.error("MONGODB_URI must be set in environment.");

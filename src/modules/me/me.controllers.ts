@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import type { AuthContext } from "../../middleware/requireSession";
-import { readSession, clearSession } from "../auth/auth.session";
+import { readSession, clearSession } from "../auth/auth.services";
 import {
   getViewerStatus,
   findProfileById,

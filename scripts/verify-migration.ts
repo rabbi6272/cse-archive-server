@@ -3,7 +3,7 @@ import { MongoClient } from "mongodb";
 import getAdmin, { getAdminAuth } from "../src/firebase-admin";
 
 const uri = process.env.MONGODB_URI;
-const dbName = process.env.MONGODB_DB || "ruetcse";
+const dbName = process.env.MONGODB_DB || "CseArchive";
 
 if (!uri) {
   console.error("MONGODB_URI must be set in environment.");

@@ -13,7 +13,7 @@ import {
   countUnclaimed,
 } from "../profile/profile.services";
 import { seriesFromRoll, type Profile, type Section } from "../profile/profile.types";
-import type { Session } from "../auth/auth.session";
+import type { Session } from "../auth/auth.types";
 
 export async function processClaimStart(email: string): Promise<void> {
   let pendingActivation = false;

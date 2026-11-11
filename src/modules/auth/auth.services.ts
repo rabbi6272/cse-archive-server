@@ -1,11 +1,93 @@
 import { createHash, randomBytes } from "node:crypto";
+import type { Context } from "hono";
+import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { adminAuth, verifyPassword, postIdentityToolkit, sendOobCode } from "../../config/firebase";
 import { env } from "../../config/env";
+import { sha256 } from "../../shared/utils";
 import { findProfileById, findLegacyByEmail } from "../profile/profile.services";
 import { getSeries } from "../profile/profile.types";
-import { SESSION_MAX_AGE_S } from "./auth.session";
-import type { Viewer, AuthSuccess, AuthFailure } from "./auth.types";
-export type { Viewer, AuthSuccess, AuthFailure };
+import type { Viewer, AuthSuccess, AuthFailure, Session } from "./auth.types";
+export type { Viewer, AuthSuccess, AuthFailure, Session };
+
+export const SESSION_COOKIE = "__session";
+export const SESSION_MAX_AGE_S = 5 * 24 * 60 * 60; // 5 days
+const TTL_MS = 60_000;
+
+const sessionCache = new Map<string, { session: Session; expires: number }>();
+
+// Prune expired cache entries every minute
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of sessionCache) {
+    if (v.expires < now) sessionCache.delete(k);
+  }
+}, 60_000);
+
+export async function createSession(c: Context, idToken: string): Promise<string> {
+  const cookie = await adminAuth.createSessionCookie(idToken, {
+    expiresIn: SESSION_MAX_AGE_S * 1000,
+  });
+
+  setCookie(c, SESSION_COOKIE, cookie, {
+    httpOnly: true,
+    secure: env.COOKIE_SECURE,
+    sameSite: "Lax",
+    path: "/",
+    maxAge: SESSION_MAX_AGE_S,
+  });
+
+  return cookie;
+}
+
+export function clearSession(c: Context): void {
+  const cookie = getCookie(c, SESSION_COOKIE);
+  if (cookie) sessionCache.delete(sha256(cookie));
+  deleteCookie(c, SESSION_COOKIE, { path: "/" });
+}
+
+export async function readSession(c: Context): Promise<Session | null> {
+  const cookie = getCookie(c, SESSION_COOKIE);
+  const authHeader = c.req.header("authorization");
+  const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : null;
+
+  const rawToken = cookie || bearerToken;
+  if (!rawToken) return null;
+
+  const key = sha256(rawToken);
+  const hit = sessionCache.get(key);
+  if (hit && hit.expires > Date.now()) return hit.session;
+
+  // Try verifying as session cookie first
+  try {
+    const d = await adminAuth.verifySessionCookie(rawToken, true);
+    const session: Session = {
+      uid: d.uid,
+      email: d.email ?? "",
+      emailVerified: d.email_verified === true,
+      mustRotate: d.mustRotate === true,
+      needsSection: d.needsSection === true,
+    };
+    sessionCache.set(key, { session, expires: Date.now() + TTL_MS });
+    return session;
+  } catch {
+    // If not a session cookie, try verifying as Firebase ID token (from client-side Firebase Auth)
+    try {
+      const d = await adminAuth.verifyIdToken(rawToken, true);
+      const session: Session = {
+        uid: d.uid,
+        email: d.email ?? "",
+        emailVerified: d.email_verified === true,
+        mustRotate: d.mustRotate === true,
+        needsSection: d.needsSection === true,
+      };
+      sessionCache.set(key, { session, expires: Date.now() + TTL_MS });
+      return session;
+    } catch {
+      sessionCache.delete(key);
+      return null;
+    }
+  }
+}
 
 export function isGoogleConfigured(): boolean {
   return Boolean(env.GOOGLE_OAUTH_CLIENT_ID && env.GOOGLE_OAUTH_CLIENT_SECRET);

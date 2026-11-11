@@ -15,7 +15,7 @@ export async function listProfilesController(c: Context) {
   const q = c.req.query("q");
   const cursor = c.req.query("cursor");
   const limitParam = c.req.query("limit");
-  const limit = limitParam ? Number.parseInt(limitParam, 10) : 50;
+  const limit = limitParam ? Number.parseInt(limitParam, 10) : 250;
 
   try {
     const result = await listPublicProfiles({
@@ -42,9 +42,8 @@ export async function getProfileByIdController(c: Context) {
       return c.json({ ok: false, code: "not-found", message: "Profile not found." }, 404);
     }
 
-    const { email: _email, ...publicProfile } = profile;
     c.header("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
-    return c.json({ ok: true, profile: publicProfile });
+    return c.json({ ok: true, profile });
   } catch (err) {
     console.error(`[profiles] Error getting profile for ${uid}:`, err);
     return c.json({ ok: false, code: "error", message: "Failed to get profile." }, 500);

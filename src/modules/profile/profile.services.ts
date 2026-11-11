@@ -42,7 +42,8 @@ export interface ListProfilesOptions {
 }
 
 export async function listPublicProfiles(options: ListProfilesOptions = {}): Promise<{
-  profiles: Array<Omit<Profile, "email">>;
+  profiles: Array<Profile>;
+  total: number;
   nextCursor?: string;
 }> {
   const col = await getProfilesCol();
@@ -62,20 +63,21 @@ export async function listPublicProfiles(options: ListProfilesOptions = {}): Pro
     filter._id = { $gt: options.cursor };
   }
 
-  const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
+  const limit = Math.min(Math.max(options.limit ?? 250, 1), 500);
 
-  // Exclude email and internal fields in public projection
-  const docs = await col
-    .find(filter, {
-      projection: {
-        email: 0,
-        nameLower: 0,
-        migratedAt: 0,
-      },
-    })
-    .sort({ _id: 1 })
-    .limit(limit + 1)
-    .toArray();
+  const [total, docs] = await Promise.all([
+    col.countDocuments(filter),
+    col
+      .find(filter, {
+        projection: {
+          nameLower: 0,
+          migratedAt: 0,
+        },
+      })
+      .sort({ _id: 1 })
+      .limit(limit + 1)
+      .toArray(),
+  ]);
 
   let nextCursor: string | undefined;
   if (docs.length > limit) {
@@ -88,10 +90,10 @@ export async function listPublicProfiles(options: ListProfilesOptions = {}): Pro
     return {
       id: _id,
       ...rest,
-    } as Omit<Profile, "email">;
+    } as Profile;
   });
 
-  return { profiles, nextCursor };
+  return { profiles, total, nextCursor };
 }
 
 export async function writeProfile(uid: string, profile: Profile): Promise<void> {
