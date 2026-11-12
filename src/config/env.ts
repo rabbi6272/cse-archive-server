@@ -44,7 +44,6 @@ const envSchema = z.object({
     .optional()
     .transform((v) => (v === undefined ? process.env.NODE_ENV === "production" : v === "true")),
 
-  ADMIN_EMAILS: z.string().default(""),
   RESEND_API_KEY: z.string().optional(),
 });
 
@@ -80,7 +79,6 @@ export function getEnv(): Env {
     ALLOWED_ORIGINS: process.env.ALLOWED_ORIGINS,
     PUBLIC_SITE_URL: process.env.PUBLIC_SITE_URL || process.env.NEXT_PUBLIC_SITE_URL,
     COOKIE_SECURE: process.env.COOKIE_SECURE,
-    ADMIN_EMAILS: process.env.ADMIN_EMAILS,
     RESEND_API_KEY: process.env.RESEND_API_KEY,
   });
 
@@ -94,3 +92,37 @@ export function getEnv(): Env {
 }
 
 export const env = getEnv();
+
+const DEV_ORIGINS = ["http://localhost:3000", "http://localhost:3001"];
+
+/**
+ * Parses ALLOWED_ORIGINS into clean origins. Accepts either a comma-separated list
+ * (`https://a.app,https://b.app`) or a JSON array (`["https://a.app", "https://b.app"]`),
+ * strips quotes, brackets and trailing slashes, and normalises each entry to its origin.
+ * Outside production the local Next.js dev ports are always allowed.
+ */
+export function parseAllowedOrigins(raw: string, nodeEnv = env.NODE_ENV): string[] {
+  let entries: string[];
+  const trimmed = raw.trim();
+  try {
+    const parsed: unknown = trimmed.startsWith("[") ? JSON.parse(trimmed) : null;
+    entries = Array.isArray(parsed) ? parsed.map(String) : trimmed.split(",");
+  } catch {
+    entries = trimmed.replace(/^\[|\]$/g, "").split(",");
+  }
+
+  const origins = new Set<string>();
+  for (const entry of entries) {
+    const value = entry.trim().replace(/^["']|["']$/g, "").replace(/\/+$/, "");
+    if (!value) continue;
+    try {
+      origins.add(new URL(value).origin);
+    } catch {
+      console.warn(`[env] ignoring invalid ALLOWED_ORIGINS entry: ${entry}`);
+    }
+  }
+  if (nodeEnv !== "production") DEV_ORIGINS.forEach((o) => origins.add(o));
+  return [...origins];
+}
+
+export const allowedOrigins = parseAllowedOrigins(env.ALLOWED_ORIGINS);

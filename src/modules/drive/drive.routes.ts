@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { requireAdmin, requireCronOrAdmin } from "../../middleware/requireAdmin";
+import { requireAdminSecretOrRole, requireCronOrAdmin, type RoleContext } from "../../middleware/requireAdmin";
 import {
   getFolderController,
   getStatusController,
@@ -8,7 +8,7 @@ import {
   adminActionController,
 } from "./drive.controllers";
 
-export const driveRoutes = new Hono();
+export const driveRoutes = new Hono<RoleContext>();
 
 // Public folder querying
 driveRoutes.post("/", getFolderController);
@@ -24,6 +24,6 @@ driveRoutes.post("/webhook", webhookController);
 driveRoutes.get("/renew-watch", requireCronOrAdmin, renewWatchController);
 driveRoutes.post("/renew-watch", requireCronOrAdmin, renewWatchController);
 
-// Drive admin operations
-driveRoutes.get("/admin", requireAdmin, getStatusController);
-driveRoutes.post("/admin", requireAdmin, adminActionController);
+// Drive admin operations: ADMIN_SECRET (automation) or a super_admin session
+driveRoutes.get("/admin", requireAdminSecretOrRole("super_admin"), getStatusController);
+driveRoutes.post("/admin", requireAdminSecretOrRole("super_admin"), adminActionController);

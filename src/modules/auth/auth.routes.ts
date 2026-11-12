@@ -4,6 +4,7 @@ import {
   signUpController,
   signOutController,
   forgotPasswordController,
+  resendVerificationController,
   sessionCheckController,
   configController,
   googleStartController,
@@ -18,8 +19,10 @@ authRoutes.post("/login", signInController); // Backward compatibility
 authRoutes.post("/signup", signUpController);
 authRoutes.post("/signout", signOutController);
 authRoutes.post("/forgot", forgotPasswordController);
+authRoutes.post("/verify/resend", resendVerificationController);
 
 // Session checks (Server-to-server & client)
+authRoutes.get("/session", sessionCheckController);
 authRoutes.post("/session", sessionCheckController);
 
 // Google OAuth

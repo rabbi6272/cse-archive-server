@@ -1,188 +1,166 @@
 import type { Context } from "hono";
-import { getCookie, setCookie, deleteCookie } from "hono/cookie";
-import { adminAuth, maskEmail, verifyPassword, sendOobCode, postIdentityToolkit } from "../../config/firebase";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
+import { idTokenForUid, maskEmail, verifyPassword, sendOobCode } from "../../config/firebase";
 import { env } from "../../config/env";
-import { checkRateLimit } from "../../middleware/rateLimit";
-import { findLegacyByEmail } from "../profile/profile.services";
-import { getSeries } from "../profile/profile.types";
-import { safeNext, safeCompare, base64url } from "../../shared/utils";
+import { checkRateLimit, isLocked, recordFailure, clearFailures, clientIp } from "../../middleware/rateLimit";
 import {
-  createSession,
+  setSessionCookie,
   clearSession,
+  forgetSession,
+  readSession,
   isGoogleConfigured,
+  isAllowedRedirectUri,
   loadViewer,
   finishSignIn,
   verifySession,
+  signUp,
   googleStart,
   googleSignIn,
 } from "./auth.services";
-import { loginSchema, signUpSchema, forgotPasswordSchema } from "./auth.types";
-import { randomBytes, createHash } from "node:crypto";
+import {
+  loginSchema,
+  signUpSchema,
+  forgotPasswordSchema,
+  googleStartSchema,
+  googleExchangeSchema,
+  type AuthFailure,
+  type AuthFailureCode,
+} from "./auth.types";
 
-const STATE_COOKIE = "__g_oauth";
-const STATE_MAX_AGE_S = 10 * 60; // 10 minutes
+// Sign-in brute-force limits
+const EMAIL_MAX_FAILURES = 5;
+const IP_MAX_FAILURES = 20; // higher: Next.js server actions may share egress IPs
+const FAILURE_WINDOW_S = 15 * 60;
+
+const STATUS_BY_CODE: Partial<Record<AuthFailureCode, ContentfulStatusCode>> = {
+  invalid: 401,
+  rate_limited: 429,
+  unavailable: 503,
+  error: 500,
+  exists: 409,
+  "roll-held": 409,
+  "series-closed": 400,
+  "bad-series": 400,
+  "no-account": 404,
+  // "claim" stays 200 so callers can branch on the code without treating it as an error
+};
+
+function failure(c: Context, f: AuthFailure) {
+  return c.json(f, STATUS_BY_CODE[f.code] ?? 200);
+}
+
+function invalidInput(c: Context, message?: string) {
+  return c.json({ ok: false, code: "invalid", message: message ?? "Invalid input" }, 400);
+}
+
+// ─── Password sign-in ────────────────────────────────────────
 
 export async function signInController(c: Context) {
   const json = await c.req.json().catch(() => ({}));
   const parsed = loginSchema.safeParse(json);
-  if (!parsed.success) {
-    return c.json(
-      { ok: false, code: "invalid", message: parsed.error.issues[0]?.message ?? "Invalid input" },
-      400,
-    );
-  }
+  if (!parsed.success) return invalidInput(c, parsed.error.issues[0]?.message);
 
   const { email, password } = parsed.data;
-  const verifyResult = await verifyPassword(email, password);
+  const ip = clientIp((n) => c.req.header(n));
+  const emailKey = `signin:${email}`;
+  const ipKey = `signin-ip:${ip}`;
 
-  if (!verifyResult.ok) {
-    console.log(`[auth] signin ${maskEmail(email)} -> ${verifyResult.reason}`);
-    return c.json(
-      {
-        ok: false,
-        code: verifyResult.reason === "invalid" ? "invalid" : "unavailable",
-        message: verifyResult.reason === "invalid"
-          ? "Check your email and password."
-          : "Authentication service temporarily unavailable.",
-      },
-      verifyResult.reason === "invalid" ? 401 : 503,
-    );
+  if ((await isLocked(emailKey, EMAIL_MAX_FAILURES)) || (await isLocked(ipKey, IP_MAX_FAILURES))) {
+    console.log(`[auth] signin ${maskEmail(email)} -> rate-limited`);
+    return failure(c, {
+      ok: false,
+      code: "rate_limited",
+      message: "Too many failed attempts. Try again in 15 minutes or reset your password.",
+    });
   }
 
-  const { idToken } = verifyResult;
-  try {
-    const decoded = await adminAuth.verifyIdToken(idToken);
+  const verifyResult = await verifyPassword(email, password);
+  if (!verifyResult.ok) {
+    console.log(`[auth] signin ${maskEmail(email)} -> ${verifyResult.reason}`);
+    if (verifyResult.reason === "invalid") {
+      await Promise.all([
+        recordFailure(emailKey, EMAIL_MAX_FAILURES, FAILURE_WINDOW_S),
+        recordFailure(ipKey, IP_MAX_FAILURES, FAILURE_WINDOW_S),
+      ]);
+      return failure(c, { ok: false, code: "invalid", message: "Check your email and password." });
+    }
+    return failure(c, {
+      ok: false,
+      code: "unavailable",
+      message: "Authentication service temporarily unavailable.",
+    });
+  }
 
-    if (decoded.mustRotate === true) {
-      console.log(`[auth] signin ${maskEmail(email)} -> needs-claim`);
-      return c.json({
-        ok: false,
-        code: "claim",
-        message: "This profile has not been claimed yet. Please claim it with your email link.",
-      });
+  try {
+    const result = await finishSignIn(verifyResult.idToken);
+    if (!result.ok) {
+      console.log(`[auth] signin ${maskEmail(email)} -> ${result.code}`);
+      return failure(c, result);
     }
 
-    const emailVerified = decoded.email_verified === true;
-    if (!emailVerified) {
+    await clearFailures(emailKey, ipKey);
+
+    if (!result.emailVerified && !(await checkRateLimit(`verify:${email}`, 5 * 60))) {
       console.log(`[auth] signin ${maskEmail(email)} -> unverified (resending link)`);
       await sendOobCode({
         requestType: "VERIFY_EMAIL",
         email,
-        idToken,
+        idToken: verifyResult.idToken,
         continueUrl: `${env.PUBLIC_SITE_URL}/profiles/create`,
       }).catch((e) => console.error("[auth] auto-resend verification failed:", e));
     }
 
-    const sessionCookieValue = await createSession(c, idToken);
-    c.header("Cache-Control", "private, no-store");
-    console.log(`[auth] signin ${maskEmail(email)} -> ok (uid: ${decoded.uid})`);
-
-    const viewer = await loadViewer(decoded.uid);
-
-    return c.json({
-      ok: true,
-      email: decoded.email ?? email,
-      emailVerified,
-      viewer: viewer ?? undefined,
-      session: {
-        value: sessionCookieValue,
-        maxAge: 5 * 24 * 60 * 60,
-      },
-    });
+    setSessionCookie(c, result.session);
+    console.log(`[auth] signin ${maskEmail(email)} -> ok (uid: ${result.viewer.uid}, role: ${result.viewer.role})`);
+    return c.json(result);
   } catch (err) {
-    console.error(`[auth] signin ${maskEmail(email)} -> error verifying token:`, err);
-    return c.json({ ok: false, code: "error", message: "Failed to establish session." }, 500);
+    console.error(`[auth] signin ${maskEmail(email)} -> error establishing session:`, err);
+    return failure(c, { ok: false, code: "error", message: "Failed to establish session." });
   }
 }
 
 export async function signOutController(c: Context) {
+  // Clears this session only. (Revoking refresh tokens would sign the user out
+  // of every device and both client sites.)
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  if (typeof body.session === "string") forgetSession(body.session); // server-to-server sign-out
   clearSession(c);
   c.header("Cache-Control", "private, no-store");
   return c.json({ ok: true });
 }
 
+// ─── Sign-up ─────────────────────────────────────────────────
+
 export async function signUpController(c: Context) {
   const json = await c.req.json().catch(() => ({}));
   const parsed = signUpSchema.safeParse(json);
-  if (!parsed.success) {
-    return c.json(
-      { ok: false, code: "invalid", message: parsed.error.issues[0]?.message ?? "Invalid input" },
-      400,
-    );
-  }
+  if (!parsed.success) return invalidInput(c, parsed.error.issues[0]?.message);
 
-  const { series: seriesId, email, password } = parsed.data;
-  const seriesConfig = getSeries(seriesId);
-  if (!seriesConfig || seriesConfig.status !== "open") {
-    console.log(`[auth] signup ${maskEmail(email)} -> series-${seriesId}-closed`);
-    return c.json(
-      { ok: false, code: "series-closed", message: "This series is not accepting new accounts." },
-      400,
-    );
+  const ip = clientIp((n) => c.req.header(n));
+  if (await checkRateLimit(`signup-ip:${ip}`, 10)) {
+    return failure(c, { ok: false, code: "rate_limited", message: "Please wait a moment and try again." });
   }
 
   try {
-    const user = await adminAuth.getUserByEmail(email);
-    if (user.customClaims?.mustRotate === true) {
-      return c.json({
-        ok: false,
-        code: "claim",
-        message: "This email has a profile from the old directory. Reclaim it with an email link instead.",
-      });
-    }
-  } catch (err: any) {
-    if (err.code !== "auth/user-not-found") throw err;
-    const legacy = await findLegacyByEmail(email);
-    if (legacy) {
-      return c.json({
-        ok: false,
-        code: "claim",
-        message: "This email has a profile from the old directory. Reclaim it with an email link instead.",
-      });
-    }
+    const result = await signUp(parsed.data);
+    if (!result.ok) return failure(c, result);
+    setSessionCookie(c, result.session);
+    return c.json(result);
+  } catch (err) {
+    console.error(`[auth] signup ${maskEmail(parsed.data.email)} -> error:`, err);
+    return failure(c, { ok: false, code: "error", message: "Failed to create account." });
   }
-
-  const signUpRes = await postIdentityToolkit<{ idToken?: string; localId?: string }>(
-    "accounts:signUp",
-    { email, password, returnSecureToken: true },
-  );
-
-  if (!signUpRes.ok) {
-    if (signUpRes.code.includes("EMAIL_EXISTS")) {
-      return c.json({ ok: false, code: "exists", message: "An account already exists with this email." }, 409);
-    }
-    return c.json({ ok: false, code: "error", message: "Failed to create account." }, 500);
-  }
-
-  const { idToken } = signUpRes.data;
-  if (!idToken) {
-    return c.json({ ok: false, code: "error", message: "Failed to obtain auth token." }, 500);
-  }
-
-  await sendOobCode({
-    requestType: "VERIFY_EMAIL",
-    email,
-    idToken,
-    continueUrl: `${env.PUBLIC_SITE_URL}/profiles/create`,
-  }).catch((e) => console.error("[auth] signup verify-email send failed:", e));
-
-  await createSession(c, idToken);
-  c.header("Cache-Control", "private, no-store");
-  return c.json({ ok: true });
 }
+
+// ─── Password reset ──────────────────────────────────────────
 
 export async function forgotPasswordController(c: Context) {
   const json = await c.req.json().catch(() => ({}));
   const parsed = forgotPasswordSchema.safeParse(json);
-  if (!parsed.success) {
-    return c.json({ ok: true }); // Anti-enumeration
-  }
+  if (!parsed.success) return c.json({ ok: true }); // Anti-enumeration
 
   const { email } = parsed.data;
-  const isLimited = await checkRateLimit(`forgot:${email}`, 60);
-  if (isLimited) {
-    return c.json({ ok: true });
-  }
+  if (await checkRateLimit(`forgot:${email}`, 60)) return c.json({ ok: true });
 
   await sendOobCode({
     requestType: "PASSWORD_RESET",
@@ -193,98 +171,123 @@ export async function forgotPasswordController(c: Context) {
   return c.json({ ok: true });
 }
 
+// ─── Email verification ──────────────────────────────────────
+
+/** Re-sends the VERIFY_EMAIL link for the signed-in account (60s cooldown). */
+export async function resendVerificationController(c: Context) {
+  const session = await readSession(c);
+  if (!session) return c.json({ ok: false, code: "unauthenticated", message: "Sign in again to continue." }, 401);
+  if (session.emailVerified) return c.json({ ok: true, alreadyVerified: true });
+
+  if (await checkRateLimit(`verify:${session.email}`, 60)) {
+    return failure(c, { ok: false, code: "rate_limited", message: "Please wait a minute before requesting another email." });
+  }
+
+  try {
+    const idToken = await idTokenForUid(session.uid);
+    const sent = await sendOobCode({
+      requestType: "VERIFY_EMAIL",
+      email: session.email,
+      idToken,
+      continueUrl: `${env.PUBLIC_SITE_URL}/profiles/create`,
+    });
+    if (!sent.ok) return failure(c, { ok: false, code: "unavailable", message: "Could not send the email. Try again." });
+    return c.json({ ok: true });
+  } catch (err) {
+    console.error(`[auth] resend verification ${maskEmail(session.email)} failed:`, err);
+    return failure(c, { ok: false, code: "error", message: "Could not send the email. Try again." });
+  }
+}
+
+// ─── Session checks ──────────────────────────────────────────
+
 export async function sessionCheckController(c: Context) {
+  c.header("Cache-Control", "private, no-store");
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   const idToken = typeof body.idToken === "string" ? body.idToken : undefined;
   const sessionValue = typeof body.session === "string" ? body.session : undefined;
 
-  // Client-side Firebase Auth ID token exchange
+  // 1. Legacy: client-side Firebase Auth ID token exchange.
+  // TODO(phase-4): remove once no client sends browser ID tokens.
   if (idToken) {
     try {
-      const decoded = await adminAuth.verifyIdToken(idToken);
-      const sessionCookieValue = await createSession(c, idToken);
-      const viewer = await loadViewer(decoded.uid);
-      c.header("Cache-Control", "private, no-store");
-      return c.json({
-        ok: true,
-        viewer: viewer ?? undefined,
-        email: decoded.email,
-        emailVerified: decoded.email_verified === true,
-        session: {
-          value: sessionCookieValue,
-          maxAge: 5 * 24 * 60 * 60,
-        },
-      });
+      const result = await finishSignIn(idToken);
+      if (!result.ok) return failure(c, result);
+      setSessionCookie(c, result.session);
+      return c.json(result);
     } catch (err) {
       console.error("[auth] session creation from idToken failed:", err);
       return c.json({ ok: false, code: "invalid-token", message: "Invalid ID token." }, 401);
     }
   }
 
-  const viewer = sessionValue ? await verifySession(sessionValue) : null;
-  return c.json(viewer ? { ok: true, viewer } : { ok: false });
+  // 2. Session cookie value passed in the body (server-to-server)
+  if (sessionValue) {
+    const viewer = await verifySession(sessionValue);
+    return c.json(viewer ? { ok: true, viewer } : { ok: false });
+  }
+
+  // 3. Session cookie / Bearer on the request itself
+  const currentSession = await readSession(c);
+  if (currentSession) {
+    const viewer = await loadViewer(currentSession);
+    return c.json({
+      ok: true,
+      viewer,
+      email: currentSession.email,
+      emailVerified: currentSession.emailVerified,
+    });
+  }
+
+  return c.json({ ok: false });
 }
+
+// ─── Google OAuth (PKCE) ─────────────────────────────────────
 
 export async function configController(c: Context) {
   return c.json({ google: isGoogleConfigured() });
 }
 
+/**
+ * Returns `{ url, state, verifier }` for the given client callback.
+ * The Next.js client stores state + verifier in its own short-lived cookie,
+ * redirects to `url`, and later calls /google/exchange from its callback route.
+ */
 export async function googleStartController(c: Context) {
-  if (!isGoogleConfigured()) return c.json({ ok: false, code: "not-configured" }, 500);
+  if (!isGoogleConfigured()) return c.json({ ok: false, code: "not-configured" }, 503);
 
-  const redirectUri = c.req.query("redirectUri") || (await c.req.json().catch(() => ({}))).redirectUri;
-  if (redirectUri) {
-    return c.json({ ok: true, ...googleStart(redirectUri) });
+  const fromBody = c.req.method === "POST" ? await c.req.json().catch(() => ({})) : {};
+  const parsed = googleStartSchema.safeParse({
+    redirectUri: c.req.query("redirectUri") ?? (fromBody as Record<string, unknown>).redirectUri,
+  });
+  if (!parsed.success) return invalidInput(c, "redirectUri is required");
+
+  if (!isAllowedRedirectUri(parsed.data.redirectUri)) {
+    console.warn(`[auth] google start -> rejected redirectUri ${parsed.data.redirectUri}`);
+    return c.json({ ok: false, code: "bad-redirect", message: "redirectUri is not allowed." }, 400);
   }
 
-  const site = c.req.query("site") || env.PUBLIC_SITE_URL;
-  const next = safeNext(c.req.query("next"));
-  const callbackUrl = `${site.replace(/\/+$/, "")}/api/v1/auth/google/callback`;
-
-  const state = base64url(randomBytes(24));
-  const verifier = base64url(randomBytes(32));
-  const challenge = base64url(createHash("sha256").update(verifier).digest());
-
-  setCookie(
-    c,
-    STATE_COOKIE,
-    JSON.stringify({ state, verifier, next, redirectUri: callbackUrl, site }),
-    {
-      httpOnly: true,
-      secure: env.COOKIE_SECURE,
-      sameSite: "Lax",
-      path: "/",
-      maxAge: STATE_MAX_AGE_S,
-    },
-  );
-
-  const params = new URLSearchParams({
-    client_id: env.GOOGLE_OAUTH_CLIENT_ID!,
-    redirect_uri: callbackUrl,
-    response_type: "code",
-    scope: "openid email profile",
-    state,
-    code_challenge: challenge,
-    code_challenge_method: "S256",
-    prompt: "select_account",
-  });
-
-  return c.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
+  return c.json({ ok: true, ...googleStart(parsed.data.redirectUri) });
 }
 
 export async function googleExchangeController(c: Context) {
-  if (!isGoogleConfigured()) return c.json({ ok: false, code: "error" }, 500);
-  const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
-  const code = String(b.code ?? "");
-  const verifier = String(b.verifier ?? "");
-  const redirectUri = String(b.redirectUri ?? "");
+  if (!isGoogleConfigured()) return c.json({ ok: false, code: "not-configured" }, 503);
 
-  if (!code || !verifier || !redirectUri) return c.json({ ok: false, code: "error" }, 400);
+  const parsed = googleExchangeSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return invalidInput(c);
+
+  const { code, verifier, redirectUri } = parsed.data;
+  if (!isAllowedRedirectUri(redirectUri)) {
+    return c.json({ ok: false, code: "bad-redirect", message: "redirectUri is not allowed." }, 400);
+  }
 
   try {
-    return c.json(await googleSignIn(code, verifier, redirectUri));
+    const result = await googleSignIn(code, verifier, redirectUri);
+    if (!result.ok) return failure(c, result);
+    setSessionCookie(c, result.session);
+    return c.json(result);
   } catch (err) {
     console.error("[auth] google exchange failed:", err);
-    return c.json({ ok: false, code: "error" }, 500);
+    return failure(c, { ok: false, code: "error", message: "Google sign-in failed." });
   }
 }

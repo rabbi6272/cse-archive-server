@@ -3,12 +3,6 @@ import { getProfilesCol } from "../../config/mongo";
 import { adminAuth } from "../../config/firebase";
 import { reserveRoll, releaseRoll } from "../profile/profile.services";
 
-export function isAuthorizedAdmin(email: string): boolean {
-  const allowlist = env.ADMIN_EMAILS.split(",")
-    .map((e) => e.trim().toLowerCase())
-    .filter(Boolean);
-  return allowlist.includes(email.trim().toLowerCase());
-}
 
 export async function sendBroadcastEmail(
   subject: string,

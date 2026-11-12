@@ -1,11 +1,20 @@
 import type { MiddlewareHandler } from "hono";
-import { env } from "../config/env";
+import { allowedOrigins, env } from "../config/env";
 
-const allowed = new Set(
-  env.ALLOWED_ORIGINS.split(",")
-    .map((s) => s.trim())
-    .filter(Boolean),
-);
+const allowed = new Set(allowedOrigins);
+
+export function isAllowedOrigin(origin: string): boolean {
+  return allowed.has(origin);
+}
+
+function originOf(url: string | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
 
 export const originCheck: MiddlewareHandler = async (c, next) => {
   if (["GET", "HEAD", "OPTIONS"].includes(c.req.method)) return next();
@@ -23,7 +32,10 @@ export const originCheck: MiddlewareHandler = async (c, next) => {
   }
 
   // Check origin or referer origin against allowed origins
-  const refererOrigin = referer ? new URL(referer).origin : null;
+  const refererOrigin = originOf(referer);
+  if (!origin && referer && !refererOrigin) {
+    return c.json({ ok: false, code: "bad-origin" }, 403);
+  }
   const effectiveOrigin = origin || refererOrigin;
 
   if (effectiveOrigin && allowed.has(effectiveOrigin)) {

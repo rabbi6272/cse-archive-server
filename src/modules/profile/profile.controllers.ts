@@ -5,6 +5,7 @@ import {
   findProfileById,
   writeProfile,
   reserveRoll,
+  releaseOtherRolls,
   setPrivateContact,
 } from "./profile.services";
 import { createProfileSchema, seriesFromRoll, type Profile, type Section } from "./profile.types";
@@ -99,6 +100,8 @@ export async function createProfileController(c: Context<AuthContext>) {
 
   try {
     await writeProfile(session.uid, profile);
+    // Drop a different roll that may have been reserved at sign-up.
+    await releaseOtherRolls(session.uid, profile.roll).catch(() => {});
     if (contact && contact.mobileNumber) {
       await setPrivateContact(session.uid, contact);
     }

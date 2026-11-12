@@ -131,7 +131,10 @@ export async function processClaimComplete(
       }
 
       await adminAuth.updateUser(session.uid, { password, emailVerified: true });
-      await adminAuth.setCustomUserClaims(session.uid, null);
+      // Clear only the activation flags; keep any other custom claims intact.
+      const current = (await adminAuth.getUser(session.uid)).customClaims ?? {};
+      const { mustRotate: _mr, needsSection: _ns, ...rest } = current;
+      await adminAuth.setCustomUserClaims(session.uid, Object.keys(rest).length ? rest : null);
       await adminAuth.revokeRefreshTokens(session.uid);
 
       await removeLegacy(session.email).catch(() => {});
@@ -186,6 +189,8 @@ export async function processClaimComplete(
     await writeProfile(session.uid, profile);
     await setPrivateContact(session.uid, { mobileNumber: legacy.mobileNumber });
     await adminAuth.updateUser(session.uid, { password, emailVerified: true });
+    // The magic-link session predates the new password; invalidate it.
+    await adminAuth.revokeRefreshTokens(session.uid);
     await removeLegacy(session.email);
 
     const freshToken = await idTokenForUid(session.uid).catch(() => null);

@@ -1,20 +1,11 @@
 import type { Context } from "hono";
-import type { AuthContext } from "../../middleware/requireSession";
-import {
-  isAuthorizedAdmin,
-  sendBroadcastEmail,
-  setCustomClaims,
-  reserveRoll,
-  releaseRoll,
-} from "./admin.services";
+import type { RoleContext } from "../../middleware/requireAdmin";
+import { sendBroadcastEmail, setCustomClaims, reserveRoll, releaseRoll } from "./admin.services";
 import { broadcastSchema, setClaimsSchema, rollActionSchema } from "./admin.types";
 
-export async function broadcastController(c: Context<AuthContext>) {
-  const session = c.get("session");
-  if (!isAuthorizedAdmin(session.email)) {
-    return c.json({ ok: false, code: "forbidden", message: "Not authorised." }, 403);
-  }
+// Role checks happen in admin.routes.ts via requireRole(); controllers assume an authorised caller.
 
+export async function broadcastController(c: Context<RoleContext>) {
   const json = await c.req.json().catch(() => ({}));
   const parsed = broadcastSchema.safeParse(json);
   if (!parsed.success) {
@@ -32,12 +23,7 @@ export async function broadcastController(c: Context<AuthContext>) {
   }
 }
 
-export async function setClaimsController(c: Context<AuthContext>) {
-  const session = c.get("session");
-  if (!isAuthorizedAdmin(session.email)) {
-    return c.json({ ok: false, code: "forbidden", message: "Not authorised." }, 403);
-  }
-
+export async function setClaimsController(c: Context<RoleContext>) {
   const json = await c.req.json().catch(() => ({}));
   const parsed = setClaimsSchema.safeParse(json);
   if (!parsed.success) {
@@ -46,18 +32,14 @@ export async function setClaimsController(c: Context<AuthContext>) {
 
   try {
     await setCustomClaims(parsed.data.uid, parsed.data.claims);
+    console.log(`[admin] claims set on ${parsed.data.uid} by ${c.get("session").uid}`);
     return c.json({ ok: true });
-  } catch (err) {
+  } catch {
     return c.json({ ok: false, code: "error", message: "Failed to set claims" }, 500);
   }
 }
 
-export async function reserveRollController(c: Context<AuthContext>) {
-  const session = c.get("session");
-  if (!isAuthorizedAdmin(session.email)) {
-    return c.json({ ok: false, code: "forbidden", message: "Not authorised." }, 403);
-  }
-
+export async function reserveRollController(c: Context<RoleContext>) {
   const json = await c.req.json().catch(() => ({}));
   const parsed = rollActionSchema.safeParse(json);
   if (!parsed.success) return c.json({ ok: false, code: "invalid" }, 400);
@@ -66,12 +48,7 @@ export async function reserveRollController(c: Context<AuthContext>) {
   return c.json({ ok: reserved });
 }
 
-export async function releaseRollController(c: Context<AuthContext>) {
-  const session = c.get("session");
-  if (!isAuthorizedAdmin(session.email)) {
-    return c.json({ ok: false, code: "forbidden", message: "Not authorised." }, 403);
-  }
-
+export async function releaseRollController(c: Context<RoleContext>) {
   const json = await c.req.json().catch(() => ({}));
   const parsed = rollActionSchema.safeParse(json);
   if (!parsed.success) return c.json({ ok: false, code: "invalid" }, 400);

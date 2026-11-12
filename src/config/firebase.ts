@@ -206,6 +206,61 @@ export async function verifyPassword(
   return { ok: false, reason: "unavailable" };
 }
 
+export type SignUpResult =
+  | { ok: true; idToken: string; uid: string }
+  | { ok: false; reason: "exists" | "weak-password" | "unavailable" };
+
+/** Creates an email/password account via Identity Toolkit `accounts:signUp`. */
+export async function signUpWithPassword(email: string, password: string): Promise<SignUpResult> {
+  const result = await postIdentityToolkit<{ idToken?: string; localId?: string }>("accounts:signUp", {
+    email: email.trim().toLowerCase(),
+    password,
+    returnSecureToken: true,
+  });
+
+  if (result.ok && result.data.idToken && result.data.localId) {
+    return { ok: true, idToken: result.data.idToken, uid: result.data.localId };
+  }
+  if (!result.ok && result.code.includes("EMAIL_EXISTS")) return { ok: false, reason: "exists" };
+  if (!result.ok && result.code.includes("WEAK_PASSWORD")) return { ok: false, reason: "weak-password" };
+  console.error(`[auth] signUp ${maskEmail(email)} -> ${!result.ok ? result.code : "no-token"}`);
+  return { ok: false, reason: "unavailable" };
+}
+
+export type IdpSignInResult =
+  | { ok: true; idToken: string; uid: string; email: string; isNewUser: boolean }
+  | { ok: false; reason: "unavailable" };
+
+/**
+ * Signs in (or creates) a Firebase user from a verified Google OAuth `id_token`
+ * via Identity Toolkit `accounts:signInWithIdp`.
+ */
+export async function signInWithIdp(googleIdToken: string, requestUri: string): Promise<IdpSignInResult> {
+  const result = await postIdentityToolkit<{
+    idToken?: string;
+    localId?: string;
+    email?: string;
+    isNewUser?: boolean;
+  }>("accounts:signInWithIdp", {
+    postBody: new URLSearchParams({ id_token: googleIdToken, providerId: "google.com" }).toString(),
+    requestUri,
+    returnSecureToken: true,
+    returnIdpCredential: false,
+  });
+
+  if (result.ok && result.data.idToken && result.data.localId) {
+    return {
+      ok: true,
+      idToken: result.data.idToken,
+      uid: result.data.localId,
+      email: (result.data.email ?? "").toLowerCase(),
+      isNewUser: result.data.isNewUser === true,
+    };
+  }
+  console.error(`[auth] signInWithIdp -> ${!result.ok ? result.code : "no-token"}`);
+  return { ok: false, reason: "unavailable" };
+}
+
 export async function idTokenForUid(uid: string): Promise<string> {
   const customToken = await adminAuth.createCustomToken(uid);
   const result = await postIdentityToolkit<{ idToken: string }>(

@@ -1,7 +1,7 @@
 import type { Context } from "hono";
 import type { AuthContext } from "../../middleware/requireSession";
 import { checkRateLimit } from "../../middleware/rateLimit";
-import { createSession } from "../auth/auth.services";
+import { createSession, clearSession, ensureUser, loadViewer } from "../auth/auth.services";
 import {
   processClaimStart,
   processClaimOpen,
@@ -47,13 +47,16 @@ export async function claimOpenController(c: Context) {
     );
   }
 
-  await createSession(c, result.idToken);
+  // Short-lived claim session: lets the user call /claim/complete. Returned in the
+  // body so the Next.js client can set `__session` on its own domain.
+  const session = await createSession(c, result.idToken);
   c.header("Cache-Control", "private, no-store");
 
   return c.json({
     ok: true,
     mode: result.mode,
     needsSection: result.needsSection,
+    session,
   });
 }
 
@@ -78,12 +81,18 @@ export async function claimCompleteController(c: Context<AuthContext>) {
     );
   }
 
-  if (result.freshToken) {
-    await createSession(c, result.freshToken);
+  await ensureUser(session.uid, session.email);
+
+  // Old refresh tokens were revoked; issue a fresh session for the claimed account.
+  if (!result.freshToken) {
+    clearSession(c);
+    return c.json({ ok: true, session: null, next: "/profiles/signin" });
   }
 
+  const fresh = await createSession(c, result.freshToken);
+  const viewer = await loadViewer({ uid: session.uid, email: session.email, emailVerified: true });
   c.header("Cache-Control", "private, no-store");
-  return c.json({ ok: true });
+  return c.json({ ok: true, session: fresh, viewer });
 }
 
 export async function claimCountController(c: Context) {

@@ -9,18 +9,21 @@ import {
   setPrivateContact,
 } from "../profile/profile.services";
 import { seriesFromRoll } from "../profile/profile.types";
-import type { Session } from "../auth/auth.types";
+import type { Session, Role } from "../auth/auth.types";
+import { getUserRole } from "../auth/auth.services";
 
 export async function getViewerStatus(session: Session | null) {
   if (!session) return { user: null };
 
   const emailVerified = session.emailVerified || (await freshEmailVerified(session.uid));
   let hasProfile = false;
+  let role: Role = "student";
   try {
-    const profile = await findProfileById(session.uid);
+    const [profile, r] = await Promise.all([findProfileById(session.uid), getUserRole(session.uid)]);
     hasProfile = Boolean(profile);
+    role = r;
   } catch (err) {
-    console.error("[me] Error checking profile existence:", err);
+    console.error("[me] Error loading viewer status:", err);
   }
 
   return {
@@ -28,6 +31,7 @@ export async function getViewerStatus(session: Session | null) {
       uid: session.uid,
       email: session.email,
       emailVerified,
+      role,
       mustRotate: session.mustRotate,
       needsSection: session.needsSection,
       hasProfile,

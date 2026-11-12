@@ -152,8 +152,10 @@ export async function reserveRoll(roll: string, uid: string): Promise<boolean> {
       },
       { upsert: true },
     );
-    // Matched means already held by someone else
-    return res.upsertedCount > 0;
+    if (res.upsertedCount > 0) return true;
+    // Already present: succeeds only if this uid already holds it (e.g. reserved at sign-up).
+    const existing = await col.findOne({ _id: roll.trim() }, { projection: { uid: 1 } });
+    return existing?.uid === uid;
   } catch {
     return false;
   }
@@ -162,6 +164,12 @@ export async function reserveRoll(roll: string, uid: string): Promise<boolean> {
 export async function releaseRoll(roll: string, uid: string): Promise<void> {
   const col = await getRollIndexCol();
   await col.deleteOne({ _id: roll.trim(), uid });
+}
+
+/** Releases every roll held by `uid` except `keepRoll`. */
+export async function releaseOtherRolls(uid: string, keepRoll: string): Promise<void> {
+  const col = await getRollIndexCol();
+  await col.deleteMany({ uid, _id: { $ne: keepRoll.trim() } });
 }
 
 export async function getPrivateContact(uid: string): Promise<PrivateContact | null> {

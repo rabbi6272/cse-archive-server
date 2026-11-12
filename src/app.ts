@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
-import { env } from "./config/env";
+import { allowedOrigins } from "./config/env";
 import { ensureIndexes } from "./config/mongo";
 import { originCheck } from "./middleware/originCheck";
 import { requireAuthSecret } from "./middleware/requireAdmin";
@@ -19,28 +19,20 @@ export const app = new Hono();
 // Logger middleware
 app.use(logger((line) => !line.startsWith("<--") && console.log(line)));
 
-// CORS Configuration
-const allowedOrigins = env.ALLOWED_ORIGINS.split(",").map((s) => s.trim()).filter(Boolean);
+// CORS: browsers on the allow-listed client sites may call any /api/v1 route
+// directly (public reads such as /profiles, plus Drive). Credentials are allowed so
+// a same-site deployment can send the session cookie; origins are an explicit list.
+const corsPolicy = cors({
+  origin: allowedOrigins,
+  allowHeaders: ["Content-Type", "Authorization"],
+  allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  credentials: true,
+  maxAge: 600,
+});
 
-app.use(
-  "/api/v1/drive/*",
-  cors({
-    origin: allowedOrigins,
-    allowHeaders: ["Content-Type", "Authorization"],
-    allowMethods: ["GET", "POST", "OPTIONS"],
-  }),
-);
-app.use("/api/v1/drive", cors({ origin: allowedOrigins, allowHeaders: ["Content-Type"] }));
-
-app.use(
-  "/api/drive/*",
-  cors({
-    origin: allowedOrigins,
-    allowHeaders: ["Content-Type", "Authorization"],
-    allowMethods: ["GET", "POST", "OPTIONS"],
-  }),
-);
-app.use("/api/drive", cors({ origin: allowedOrigins, allowHeaders: ["Content-Type"] }));
+for (const path of ["/api/v1", "/api/v1/*", "/v1", "/v1/*", "/api/drive", "/api/drive/*"]) {
+  app.use(path, corsPolicy);
+}
 
 // Health checks
 app.get("/health", (c) => c.text("ok"));
@@ -52,6 +44,8 @@ export const v1 = new Hono();
 
 // Apply CSRF origin check on state-changing requests
 v1.use("*", originCheck);
+
+v1.get("/health", (c) => c.text("ok"));
 
 // Mount feature modules
 v1.route("/drive", driveRoutes);

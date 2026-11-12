@@ -1,6 +1,7 @@
 import { MongoClient, type Db, type Collection } from "mongodb";
 import { env } from "./env";
 import type { Profile, PrivateContact, LegacyProfile } from "../modules/profile/profile.types";
+import type { Role } from "../modules/auth/auth.types";
 
 export interface ProfileDoc extends Omit<Profile, "id"> {
   _id: string; // Firebase Auth uid
@@ -26,8 +27,18 @@ export interface RollIndexDoc {
 
 export interface RateLimitDoc {
   _id: string; // sha256(key)
-  lastSentAt: Date;
+  lastSentAt?: Date; // cooldown limiter
+  count?: number; // failure counter
   expireAt: Date;
+}
+
+/** Private per-account record holding the role. Never exposed via public listings. */
+export interface UserDoc {
+  _id: string; // Firebase Auth uid
+  email: string;
+  role: Role;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 let client: MongoClient | null = null;
@@ -78,6 +89,11 @@ export async function getRateLimitsCol(): Promise<Collection<RateLimitDoc>> {
   return d.collection<RateLimitDoc>("rateLimits");
 }
 
+export async function getUsersCol(): Promise<Collection<UserDoc>> {
+  const d = await getDb();
+  return d.collection<UserDoc>("users");
+}
+
 let indexesEnsured = false;
 
 export async function ensureIndexes(): Promise<void> {
@@ -93,6 +109,10 @@ export async function ensureIndexes(): Promise<void> {
 
     // Legacy profiles
     await d.collection("legacyProfiles").createIndex({ email: 1 }, { unique: true, sparse: true });
+
+    // Users (roles)
+    await d.collection("users").createIndex({ role: 1 });
+    await d.collection("users").createIndex({ email: 1 });
 
     // Rate limits (TTL)
     await d.collection("rateLimits").createIndex({ expireAt: 1 }, { expireAfterSeconds: 0 });
