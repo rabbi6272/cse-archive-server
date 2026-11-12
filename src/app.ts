@@ -16,6 +16,13 @@ import { adminRoutes } from "./modules/admin/admin.routes";
 
 export const app = new Hono();
 
+const ALLOWED_ORIGINS = [
+  "http://localhost:3000",
+  "http://localhost:3001",
+  "https://ruetcse24-new.vercel.app",
+  "https://ruetcsearchive.vercel.app"
+];
+
 // Logger middleware
 app.use(logger((line) => !line.startsWith("<--") && console.log(line)));
 
@@ -23,7 +30,7 @@ app.use(logger((line) => !line.startsWith("<--") && console.log(line)));
 // directly (public reads such as /profiles, plus Drive). Credentials are allowed so
 // a same-site deployment can send the session cookie; origins are an explicit list.
 const corsPolicy = cors({
-  origin: allowedOrigins,
+  origin: ALLOWED_ORIGINS,
   allowHeaders: ["Content-Type", "Authorization"],
   allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   credentials: true,
