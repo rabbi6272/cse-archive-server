@@ -65,7 +65,17 @@ export async function signInController(c: Context) {
   const emailKey = `signin:${email}`;
   const ipKey = `signin-ip:${ip}`;
 
-  if ((await isLocked(emailKey, EMAIL_MAX_FAILURES)) || (await isLocked(ipKey, IP_MAX_FAILURES))) {
+  // The limiter lives in MongoDB. If the database is unreachable, fail open (log and
+  // continue) rather than locking every user out; Google's own brute-force
+  // protection on accounts:signInWithPassword still applies.
+  const locked = await Promise.all([isLocked(emailKey, EMAIL_MAX_FAILURES), isLocked(ipKey, IP_MAX_FAILURES)])
+    .then(([byEmail, byIp]) => byEmail || byIp)
+    .catch((err) => {
+      console.error("[auth] rate-limit check failed (allowing attempt):", err);
+      return false;
+    });
+
+  if (locked) {
     console.log(`[auth] signin ${maskEmail(email)} -> rate-limited`);
     return failure(c, {
       ok: false,
@@ -81,7 +91,7 @@ export async function signInController(c: Context) {
       await Promise.all([
         recordFailure(emailKey, EMAIL_MAX_FAILURES, FAILURE_WINDOW_S),
         recordFailure(ipKey, IP_MAX_FAILURES, FAILURE_WINDOW_S),
-      ]);
+      ]).catch((err) => console.error("[auth] could not record sign-in failure:", err));
       return failure(c, { ok: false, code: "invalid", message: "Check your email and password." });
     }
     return failure(c, {
@@ -98,9 +108,11 @@ export async function signInController(c: Context) {
       return failure(c, result);
     }
 
-    await clearFailures(emailKey, ipKey);
+    await clearFailures(emailKey, ipKey).catch((err) => console.error("[auth] could not clear failures:", err));
 
-    if (!result.emailVerified && !(await checkRateLimit(`verify:${email}`, 5 * 60))) {
+    // On a limiter error, skip the automatic resend (the user can still resend manually).
+    const resendCoolingDown = await checkRateLimit(`verify:${email}`, 5 * 60).catch(() => true);
+    if (!result.emailVerified && !resendCoolingDown) {
       console.log(`[auth] signin ${maskEmail(email)} -> unverified (resending link)`);
       await sendOobCode({
         requestType: "VERIFY_EMAIL",
@@ -160,7 +172,11 @@ export async function forgotPasswordController(c: Context) {
   if (!parsed.success) return c.json({ ok: true }); // Anti-enumeration
 
   const { email } = parsed.data;
-  if (await checkRateLimit(`forgot:${email}`, 60)) return c.json({ ok: true });
+  const coolingDown = await checkRateLimit(`forgot:${email}`, 60).catch((err) => {
+    console.error("[auth] forgot rate-limit check failed (allowing):", err);
+    return false;
+  });
+  if (coolingDown) return c.json({ ok: true });
 
   await sendOobCode({
     requestType: "PASSWORD_RESET",
@@ -179,7 +195,7 @@ export async function resendVerificationController(c: Context) {
   if (!session) return c.json({ ok: false, code: "unauthenticated", message: "Sign in again to continue." }, 401);
   if (session.emailVerified) return c.json({ ok: true, alreadyVerified: true });
 
-  if (await checkRateLimit(`verify:${session.email}`, 60)) {
+  if (await checkRateLimit(`verify:${session.email}`, 60).catch(() => false)) {
     return failure(c, { ok: false, code: "rate_limited", message: "Please wait a minute before requesting another email." });
   }
 

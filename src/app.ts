@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
-import { allowedOrigins } from "./config/env";
+import { ALLOWED_ORIGINS } from "./config/origins";
 import { ensureIndexes } from "./config/mongo";
 import { originCheck } from "./middleware/originCheck";
 import { requireAuthSecret } from "./middleware/requireAdmin";
@@ -16,19 +16,10 @@ import { adminRoutes } from "./modules/admin/admin.routes";
 
 export const app = new Hono();
 
-const ALLOWED_ORIGINS = [
-  "http://localhost:3000",
-  "http://localhost:3001",
-  "https://ruetcse24-new.vercel.app",
-  "https://ruetcsearchive.vercel.app"
-];
 
 // Logger middleware
 app.use(logger((line) => !line.startsWith("<--") && console.log(line)));
 
-// CORS: browsers on the allow-listed client sites may call any /api/v1 route
-// directly (public reads such as /profiles, plus Drive). Credentials are allowed so
-// a same-site deployment can send the session cookie; origins are an explicit list.
 const corsPolicy = cors({
   origin: ALLOWED_ORIGINS,
   allowHeaders: ["Content-Type", "Authorization"],
@@ -37,8 +28,21 @@ const corsPolicy = cors({
   maxAge: 600,
 });
 
+// Public Drive reads (folder listing + status) are open to any origin: they take no session
+// and change nothing, so there is nothing to protect, and skipping the allow-list keeps this hot
+// path cheap. Admin/cron/webhook Drive routes keep the strict policy above.
+const openDriveCors = cors({
+  origin: "*",
+  allowHeaders: ["Content-Type"],
+  allowMethods: ["GET", "POST", "OPTIONS"],
+  maxAge: 86400,
+});
+const PUBLIC_DRIVE_PATH = /^(?:\/api)?(?:\/v1)?\/drive(?:\/status)?\/?$/;
+
 for (const path of ["/api/v1", "/api/v1/*", "/v1", "/v1/*", "/api/drive", "/api/drive/*"]) {
-  app.use(path, corsPolicy);
+  app.use(path, (c, next) =>
+    PUBLIC_DRIVE_PATH.test(c.req.path) ? openDriveCors(c, next) : corsPolicy(c, next),
+  );
 }
 
 // Health checks

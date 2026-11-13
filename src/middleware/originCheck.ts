@@ -1,7 +1,8 @@
 import type { MiddlewareHandler } from "hono";
-import { allowedOrigins, env } from "../config/env";
+import { env } from "../config/env";
+import { ALLOWED_ORIGINS } from "../config/origins";
 
-const allowed = new Set(allowedOrigins);
+const allowed = new Set(ALLOWED_ORIGINS);
 
 export function isAllowedOrigin(origin: string): boolean {
   return allowed.has(origin);
@@ -16,18 +17,29 @@ function originOf(url: string | undefined): string | null {
   }
 }
 
+/**
+ * POST endpoints exempt from the CSRF origin check:
+ *  - `/drive`: public folder listing. A read that happens to use POST; it takes no
+ *    session and changes nothing, so there is nothing to forge. Browsers prefetch it
+ *    directly and some (privacy settings, extensions) send `Origin: null`.
+ *  - `/drive/webhook`: called by Google with no browser origin; it verifies its own
+ *    `x-goog-channel-token`.
+ */
+const EXEMPT_POST = /\/v1\/drive(\/webhook)?\/?$/;
+
 export const originCheck: MiddlewareHandler = async (c, next) => {
   if (["GET", "HEAD", "OPTIONS"].includes(c.req.method)) return next();
-  const origin = c.req.header("origin");
+  if (EXEMPT_POST.test(c.req.path)) return next();
+
+  // Browsers send the literal string "null" for opaque origins; treat it as absent.
+  const rawOrigin = c.req.header("origin");
+  const origin = rawOrigin === "null" ? undefined : rawOrigin;
   const referer = c.req.header("referer");
   const authHeader = c.req.header("authorization");
 
   // Server-to-server calls with Bearer secrets bypass CSRF origin checks
-  if (
-    authHeader &&
-    ((env.AUTH_SERVICE_SECRET && authHeader === `Bearer ${env.AUTH_SERVICE_SECRET}`) ||
-      (env.ADMIN_SECRET && authHeader === `Bearer ${env.ADMIN_SECRET}`))
-  ) {
+  const bearerSecrets = [env.AUTH_SERVICE_SECRET, env.ADMIN_SECRET, env.CRON_SECRET].filter(Boolean);
+  if (authHeader && bearerSecrets.some((secret) => authHeader === `Bearer ${secret}`)) {
     return next();
   }
 
@@ -48,6 +60,6 @@ export const originCheck: MiddlewareHandler = async (c, next) => {
     return next();
   }
 
-  console.warn(`[originCheck] Rejected origin: "${effectiveOrigin}" for ${c.req.method} ${c.req.path}`);
+  console.warn(`[originCheck] Rejected origin: "${rawOrigin ?? effectiveOrigin}" for ${c.req.method} ${c.req.path}`);
   return c.json({ ok: false, code: "bad-origin" }, 403);
 };

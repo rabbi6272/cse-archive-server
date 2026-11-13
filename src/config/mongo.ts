@@ -44,14 +44,31 @@ export interface UserDoc {
 let client: MongoClient | null = null;
 let db: Db | null = null;
 
+/** Host part of the URI only — never logs credentials. */
+function mongoHost(uri: string): string {
+  return uri.replace(/^mongodb(\+srv)?:\/\/([^@/]*@)?/, "").split(/[/?]/)[0] || "(empty)";
+}
+
 export async function getMongoClient(): Promise<MongoClient> {
   if (!client) {
-    client = new MongoClient(env.MONGODB_URI, {
+    const next = new MongoClient(env.MONGODB_URI, {
       serverSelectionTimeoutMS: 5000,
       connectTimeoutMS: 5000,
     });
-    await client.connect();
-    console.log(`[mongo] Connected to MongoDB database: ${env.MONGODB_DB}`);
+    try {
+      await next.connect();
+    } catch (err) {
+      // Don't cache a client that never connected; the next request retries.
+      await next.close().catch(() => {});
+      console.error(
+        `[mongo] Connection to ${mongoHost(env.MONGODB_URI)} failed. Check MONGODB_URI on this host ` +
+          `and that MongoDB Atlas Network Access allows this server's IP.`,
+        err,
+      );
+      throw err;
+    }
+    client = next;
+    console.log(`[mongo] Connected to ${mongoHost(env.MONGODB_URI)}, database: ${env.MONGODB_DB}`);
   }
   return client;
 }

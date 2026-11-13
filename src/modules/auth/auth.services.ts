@@ -208,10 +208,19 @@ export async function finishSignIn(idToken: string): Promise<AuthSuccess | AuthF
 
   const email = (decoded.email ?? "").toLowerCase();
   const emailVerified = decoded.email_verified === true;
-  await ensureUser(decoded.uid, email);
+  const identity = { uid: decoded.uid, email, emailVerified };
+
+  // MongoDB holds the role and profile. If it is unreachable, still sign the user in
+  // with the least-privileged view (student, no profile) instead of failing login.
+  await ensureUser(decoded.uid, email).catch((err) =>
+    console.error(`[auth] ensureUser failed for ${decoded.uid} (continuing):`, err),
+  );
   const [session, viewer] = await Promise.all([
     mintSession(idToken),
-    loadViewer({ uid: decoded.uid, email, emailVerified }),
+    loadViewer(identity).catch((err): Viewer => {
+      console.error(`[auth] loadViewer failed for ${decoded.uid} (using token data):`, err);
+      return { ...identity, role: "student", roll: "", series: "", name: "", profilePictureUrl: "", hasProfile: false };
+    }),
   ]);
   return { ok: true, email, emailVerified, viewer, session };
 }

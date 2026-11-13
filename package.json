@@ -9,9 +9,7 @@
     "start": "bun src/index.ts",
     "dev": "bun --watch src/index.ts",
     "test": "bun test",
-    "typecheck": "tsc --noEmit",
-    "migrate:data": "bun scripts/migrate-firestore-to-mongo.ts",
-    "verify:data": "bun scripts/verify-migration.ts"
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/bun": "latest"
